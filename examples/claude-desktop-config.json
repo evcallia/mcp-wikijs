@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "wikijs": {
+      "command": "node",
+      "args": ["/Users/widjis/Documents/System Project/mcp-wikijs/dist/index.js"],
+      "env": {
+        "WIKIJS_URL": "https://mtiwiki.merdekabattery.com",
+        "WIKIJS_API_TOKEN": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcGkiOjEsImdycCI6MSwiaWF0IjoxNzU0NjM5MzA5LCJleHAiOjE4NDkzMTIxMDksImF1ZCI6InVybjp3aWtpLmpzIiwiaXNzIjoidXJuOndpa2kuanMifQ.rFoGbJUUZEggd5bLLxt0FLdJ5uA9LCuqsmMGBkWZeEOVPXs-jsU_PbU__Tivd4m97svkmtaobY5uBqrobPNwVLHBVRF3vgDYb3bta36MrRVpRWtYSQM10jTUs4lDjWfMi_wH8dnlcSbIiNcQVnW_zGsWliHwMAUfBfVbfH3QNEBnZweloKmeMnlwT0-aXjK0BuapnJjB5BkJMJ4l-yZsDQfnlVJgcbV5kkNiswjvFIhLR4K9xzplTFm-qjnvuvjTPQqhvnOGPp-WLaXeCFOI-ssYvYAxRrnesAha0kWJ-0trj1-1jaJc88_LRzvf6IyDa-xg34wnCskgonMLzHDrZA",
+        "NODE_TLS_REJECT_UNAUTHORIZED": "0",
+        "MCP_SERVER_NAME": "wikijs-mcp",
+        "LOG_LEVEL": "info"
+      }
+    }
+  }
+}
