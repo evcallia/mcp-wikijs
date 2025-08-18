@@ -157,27 +157,42 @@ export class WikiJsClient {
   }
 
   async searchPages(query: string, limit: number = 10): Promise<WikiPage[]> {
-    const graphqlQuery = `
-      query SearchPages($query: String!, $limit: Int!) {
+    const searchQuery = `
+      query SearchPages($query: String!) {
         pages {
-          search(query: $query, limit: $limit) {
-            id
-            path
-            title
-            description
-            createdAt
-            updatedAt
-            isPublished
-            isPrivate
-            locale
-            tags
+          search(query: $query) {
+            totalHits
+            results {
+              id
+              path
+              title
+              description
+              locale
+            }
           }
         }
       }
     `;
 
-    const result = await this.executeGraphQL(graphqlQuery, { query, limit });
-    return result.pages.search || [];
+    const response = await this.executeGraphQL(searchQuery, { query });
+    
+    // Transform the search results to match WikiPage interface
+    const results = response.pages.search.results || [];
+    const limitedResults = limit ? results.slice(0, limit) : results;
+    
+    return limitedResults.map((result: any) => ({
+      id: parseInt(result.id), // Convert string ID to number
+      path: result.path,
+      title: result.title,
+      description: result.description || '',
+      content: '', // Search results don't include full content
+      createdAt: new Date().toISOString(), // Placeholder
+      updatedAt: new Date().toISOString(), // Placeholder
+      isPublished: true, // Placeholder
+      isPrivate: false, // Placeholder
+      locale: result.locale || 'en',
+      tags: [] // Search results don't include tags
+    }));
   }
 
   async getPage(id?: number, path?: string): Promise<WikiPage> {

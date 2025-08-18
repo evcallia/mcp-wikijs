@@ -2,6 +2,44 @@
 
 ## 2025-08-08
 
+### GitHub Repository Creation
+
+**Successfully pushed MCP Wiki.js Server to GitHub**
+
+- **Repository**: https://github.com/widjis/mcp-wikijs.git
+- **Initial commit**: "Initial commit: MCP Wiki.js Server with GraphQL fixes"
+- **Files pushed**: 17 files, 5,238 insertions
+- **Branch**: main (set as default tracking branch)
+
+#### GraphQL Schema Fixes Completed:
+
+1. **Tags Field Schema Resolution**
+   - Identified conflicting GraphQL schemas for tags field
+   - `pages.list` query uses `[String]` for tags (simple array)
+   - `pages.single` and `pages.singleByPath` use `[PageTag]!` requiring subfields
+   - Updated queries to use correct schema: `tags { tag }` for single page queries
+   - Added tag transformation logic to convert `[{tag: 'name'}]` to `['name']`
+
+2. **Locale Parameter Fix**
+   - Added required `locale` parameter to `singleByPath` GraphQL query
+   - Set default locale to 'en' for path-based page retrieval
+
+3. **Author Field Removal**
+   - Removed non-existent `authorId` field from GraphQL queries
+   - Updated queries to match actual Wiki.js GraphQL schema
+
+4. **Enhanced Error Logging**
+   - Made `executeGraphQL` method public for debugging
+   - Added detailed error logging with status, query, and variables
+   - Improved debugging capabilities for GraphQL validation errors
+
+#### Testing Results:
+- ✅ Connection test: PASSED
+- ✅ List pages: PASSED (3 pages found)
+- ✅ Get page by ID: PASSED
+- ✅ Get page by path: PASSED
+- ✅ TypeScript compilation: PASSED (no errors)
+
 ### Project Initialization
 
 **Created Wiki.js MCP Server project from scratch**
