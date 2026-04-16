@@ -13,7 +13,9 @@ dotenv.config();
 
 async function testConnection() {
   console.log('🔍 Testing Wiki.js MCP Server Connection...');
-  
+  console.log(`   URL: ${process.env.WIKIJS_URL || 'http://localhost:3000'}`);
+  console.log(`   Cloudflare Access: ${process.env.CLOUDFLARE_CLIENT_ID ? 'configured' : 'not configured'}`);
+
   const client = new WikiJsClient({
     baseUrl: process.env.WIKIJS_URL || 'http://localhost:3000',
     apiToken: process.env.WIKIJS_API_TOKEN,

@@ -102,13 +102,21 @@ export class WikiJsClient {
 
   constructor(config: WikiJsConfig) {
     this.config = config;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    // Add Cloudflare Access headers if configured
+    if (process.env.CLOUDFLARE_CLIENT_ID && process.env.CLOUDFLARE_CLIENT_SECRET) {
+      headers['CF-Access-Client-Id'] = process.env.CLOUDFLARE_CLIENT_ID;
+      headers['CF-Access-Client-Secret'] = process.env.CLOUDFLARE_CLIENT_SECRET;
+    }
+
     this.client = axios.create({
       baseURL: config.baseUrl,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       // Handle SSL certificate issues if NODE_TLS_REJECT_UNAUTHORIZED=0
-      httpsAgent: process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0' ? 
+      httpsAgent: process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0' ?
         new https.Agent({ rejectUnauthorized: false }) : undefined,
     });
 
@@ -680,7 +688,8 @@ export class WikiJsClient {
             query {
               system {
                 info {
-                  version
+                  currentVersion
+                  latestVersion
                 }
               }
             }
@@ -688,7 +697,7 @@ export class WikiJsClient {
           const systemResult = await this.executeGraphQL(systemQuery);
           return {
             success: true,
-            version: systemResult.system?.info?.version || 'Unknown',
+            version: systemResult.system?.info?.currentVersion || 'Unknown',
           };
         } catch (systemError) {
           // System query failed, but connection works
