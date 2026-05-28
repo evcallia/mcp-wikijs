@@ -112,9 +112,11 @@ export class WikiJsClient {
       headers['CF-Access-Client-Secret'] = process.env.CLOUDFLARE_CLIENT_SECRET;
     }
 
+    const timeoutMs = parseInt(process.env.WIKIJS_TIMEOUT_MS || '60000', 10);
     this.client = axios.create({
       baseURL: config.baseUrl,
       headers,
+      timeout: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60000,
       // Handle SSL certificate issues if NODE_TLS_REJECT_UNAUTHORIZED=0
       httpsAgent: process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0' ?
         new https.Agent({ rejectUnauthorized: false }) : undefined,
@@ -425,10 +427,12 @@ export class WikiJsClient {
   }
 
   private findSectionByTitle(sections: ContentSection[], title: string): ContentSection | null {
-    return sections.find(section => 
-      section.title.toLowerCase().includes(title.toLowerCase()) ||
-      title.toLowerCase().includes(section.title.toLowerCase())
-    ) || null;
+    const target = title.trim().toLowerCase();
+    const exact = sections.find(s => s.title.trim().toLowerCase() === target);
+    if (exact) return exact;
+    const prefix = sections.find(s => s.title.trim().toLowerCase().startsWith(target));
+    if (prefix) return prefix;
+    return null;
   }
 
   private applySectionUpdate(
@@ -458,131 +462,147 @@ export class WikiJsClient {
         lines.splice(section.startLine + 1, 0, ...newContent.split('\n'));
         break;
         
-      case 'insert_after':
-        if (targetLine !== undefined) {
-          lines.splice(targetLine + 1, 0, ...newContent.split('\n'));
-        }
+      case 'insert_after': {
+        const idx = targetLine !== undefined ? targetLine + 1 : section.endLine + 1;
+        lines.splice(idx, 0, ...newContent.split('\n'));
         break;
-        
-      case 'insert_before':
-        if (targetLine !== undefined) {
-          lines.splice(targetLine, 0, ...newContent.split('\n'));
-        }
+      }
+
+      case 'insert_before': {
+        const idx = targetLine !== undefined ? targetLine : section.startLine;
+        lines.splice(idx, 0, ...newContent.split('\n'));
         break;
+      }
     }
     
     return lines.join('\n');
   }
 
+  // Resolve sectionUpdates against parsed sections. Returns the new content plus a list of any
+  // titles that could not be matched. Applies updates in reverse section-start order so that earlier
+  // sections' line anchors remain valid while later sections are mutated. Does not re-parse mid-loop
+  // (which previously let new headings introduced by one update get fuzzy-matched by a later one).
+  private applyResolvedSectionUpdates(
+    originalContent: string,
+    sectionUpdates: NonNullable<IntelligentUpdatePageData['sectionUpdates']>
+  ): { content: string; notFound: string[] } {
+    const sections = this.parseMarkdownSections(originalContent);
+    const resolved: { section: ContentSection; update: NonNullable<IntelligentUpdatePageData['sectionUpdates']>[number] }[] = [];
+    const notFound: string[] = [];
+
+    for (const update of sectionUpdates) {
+      const section = this.findSectionByTitle(sections, update.sectionTitle);
+      if (section) resolved.push({ section, update });
+      else notFound.push(update.sectionTitle);
+    }
+
+    resolved.sort((a, b) => b.section.startLine - a.section.startLine);
+
+    let content = originalContent;
+    for (const { section, update } of resolved) {
+      content = this.applySectionUpdate(content, section, update.newContent, update.operation, update.targetLine);
+    }
+
+    return { content, notFound };
+  }
+
   // Intelligent Update Method - Implements Gather-Analyze-Edit Workflow
   async updatePageIntelligent(updateData: IntelligentUpdatePageData): Promise<{ responseResult: { succeeded: boolean; errorCode?: number; message?: string } }> {
+    // GATHER: Retrieve current page content
+    const currentPage = await this.getPage(updateData.id);
+    if (!currentPage) {
+      throw new Error(`Page with ID ${updateData.id} not found`);
+    }
+
+    // ANALYZE + EDIT: Apply section-specific updates
+    let updatedContent = currentPage.content || '';
+    if (updateData.sectionUpdates && updateData.sectionUpdates.length > 0) {
+      const { content, notFound } = this.applyResolvedSectionUpdates(updatedContent, updateData.sectionUpdates);
+      if (notFound.length > 0) {
+        // Don't half-apply: refuse the whole update so callers can fix titles without partial writes.
+        return {
+          responseResult: {
+            succeeded: false,
+            errorCode: 6001,
+            message: `Section(s) not found in page ${updateData.id}: ${notFound.map(t => `"${t}"`).join(', ')}`,
+          },
+        };
+      }
+      updatedContent = content;
+    }
+
+    // Wiki.js's pages.update resolver crashes with "Cannot read properties of undefined (reading 'map')"
+    // when tags is omitted. Default every globalUpdate-eligible field to the current page's value so
+    // the mutation is always fully-populated.
+    const g = updateData.globalUpdates || {};
+    const finalUpdateData: UpdatePageData = {
+      id: updateData.id,
+      content: updatedContent,
+      title: g.title ?? currentPage.title,
+      description: g.description ?? currentPage.description,
+      tags: g.tags ?? currentPage.tags ?? [],
+      isPublished: g.isPublished ?? currentPage.isPublished,
+      isPrivate: g.isPrivate ?? currentPage.isPrivate,
+    };
+
+    return await this.updatePage(finalUpdateData);
+  }
+
+  // Fallback method that combines intelligent update with delete-recreate strategy
+  async updatePageRobust(updateData: IntelligentUpdatePageData): Promise<{ responseResult: { succeeded: boolean; errorCode?: number; message?: string } }> {
+    let intelligentError: unknown = null;
     try {
-      // GATHER: Retrieve current page content
+      const result = await this.updatePageIntelligent(updateData);
+      if (result.responseResult.succeeded) return result;
+      // Section-not-found is a caller error, not a transient Wiki.js failure — don't fall back
+      // (delete+recreate with unmatched titles would silently lose the intended edits).
+      if (result.responseResult.errorCode === 6001) return result;
+      console.warn('Intelligent update reported failure, falling back to recreate strategy:', result.responseResult.message);
+    } catch (error) {
+      intelligentError = error;
+      console.warn('Intelligent update threw, falling back to recreate strategy:', error);
+    }
+
+    try {
       const currentPage = await this.getPage(updateData.id);
       if (!currentPage) {
         throw new Error(`Page with ID ${updateData.id} not found`);
       }
 
-      // ANALYZE: Parse content structure
-      const sections = this.parseMarkdownSections(currentPage.content || '');
       let updatedContent = currentPage.content || '';
-
-      // EDIT: Apply section-specific updates
-      if (updateData.sectionUpdates) {
-        for (const sectionUpdate of updateData.sectionUpdates) {
-          const targetSection = this.findSectionByTitle(sections, sectionUpdate.sectionTitle);
-          
-          if (targetSection) {
-            updatedContent = this.applySectionUpdate(
-              updatedContent,
-              targetSection,
-              sectionUpdate.newContent,
-              sectionUpdate.operation,
-              sectionUpdate.targetLine
-            );
-            
-            // Re-parse sections after each update to maintain accuracy
-            const updatedSections = this.parseMarkdownSections(updatedContent);
-            sections.length = 0;
-            sections.push(...updatedSections);
-          } else {
-            console.warn(`Section "${sectionUpdate.sectionTitle}" not found in page ${updateData.id}`);
-          }
+      if (updateData.sectionUpdates && updateData.sectionUpdates.length > 0) {
+        const { content, notFound } = this.applyResolvedSectionUpdates(updatedContent, updateData.sectionUpdates);
+        if (notFound.length > 0) {
+          return {
+            responseResult: {
+              succeeded: false,
+              errorCode: 6001,
+              message: `Section(s) not found in page ${updateData.id}: ${notFound.map(t => `"${t}"`).join(', ')}`,
+            },
+          };
         }
+        updatedContent = content;
       }
 
-      // Prepare final update data
-      const finalUpdateData: UpdatePageData = {
-        id: updateData.id,
+      await this.deletePage(updateData.id);
+
+      const g = updateData.globalUpdates || {};
+      const recreateData: CreatePageData = {
+        title: g.title ?? currentPage.title,
         content: updatedContent,
-        ...(updateData.globalUpdates || {})
+        path: currentPage.path,
+        description: g.description ?? currentPage.description ?? '',
+        tags: g.tags ?? currentPage.tags ?? [],
+        isPublished: g.isPublished ?? currentPage.isPublished,
+        isPrivate: g.isPrivate ?? currentPage.isPrivate,
+        locale: currentPage.locale,
+        editor: 'markdown',
       };
 
-      // UPDATE: Apply changes using existing update method
-      return await this.updatePage(finalUpdateData);
-      
-    } catch (error) {
-      console.error('Error in intelligent update:', error);
-      throw error;
-    }
-  }
-
-  // Fallback method that combines intelligent update with delete-recreate strategy
-  async updatePageRobust(updateData: IntelligentUpdatePageData): Promise<{ responseResult: { succeeded: boolean; errorCode?: number; message?: string } }> {
-    try {
-      // First try intelligent update
-      return await this.updatePageIntelligent(updateData);
-    } catch (error) {
-      console.warn('Intelligent update failed, falling back to recreate strategy:', error);
-      
-      try {
-        // GATHER: Get current page
-        const currentPage = await this.getPage(updateData.id);
-        if (!currentPage) {
-          throw new Error(`Page with ID ${updateData.id} not found`);
-        }
-
-        // ANALYZE & EDIT: Apply updates to content
-        const sections = this.parseMarkdownSections(currentPage.content || '');
-        let updatedContent = currentPage.content || '';
-
-        if (updateData.sectionUpdates) {
-          for (const sectionUpdate of updateData.sectionUpdates) {
-            const targetSection = this.findSectionByTitle(sections, sectionUpdate.sectionTitle);
-            
-            if (targetSection) {
-              updatedContent = this.applySectionUpdate(
-                updatedContent,
-                targetSection,
-                sectionUpdate.newContent,
-                sectionUpdate.operation,
-                sectionUpdate.targetLine
-              );
-            }
-          }
-        }
-
-        // DELETE & RECREATE: Use the proven strategy
-        await this.deletePage(updateData.id);
-        
-        const recreateData = {
-          title: updateData.globalUpdates?.title || currentPage.title,
-          content: updatedContent,
-          path: currentPage.path,
-          description: updateData.globalUpdates?.description || currentPage.description,
-          tags: updateData.globalUpdates?.tags || currentPage.tags,
-          isPublished: updateData.globalUpdates?.isPublished ?? currentPage.isPublished,
-          isPrivate: updateData.globalUpdates?.isPrivate ?? currentPage.isPrivate,
-          locale: currentPage.locale,
-          editor: 'markdown'
-        };
-
-        return await this.createPage(recreateData);
-        
-      } catch (fallbackError) {
-        console.error('Robust update fallback also failed:', fallbackError);
-        throw fallbackError;
-      }
+      return await this.createPage(recreateData);
+    } catch (fallbackError) {
+      console.error('Robust update fallback also failed:', fallbackError);
+      throw intelligentError ?? fallbackError;
     }
   }
 
