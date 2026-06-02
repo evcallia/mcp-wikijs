@@ -243,7 +243,8 @@ Intelligently update specific sections of a Wiki.js page using the gather-analyz
     sectionTitle: string;        // Title of the section to update
     newContent: string;          // New content for the section
     operation: 'replace' | 'append' | 'prepend' | 'insert_after' | 'insert_before';
-    targetLine?: number;         // Target line number for insert operations
+    targetLine?: number;         // Optional explicit line override for insert_after/insert_before;
+                                 // defaults to the section's end+1 (insert_after) or start (insert_before).
   }>;
   globalUpdates?: {              // Global page updates (optional)
     title?: string;
@@ -255,17 +256,21 @@ Intelligently update specific sections of a Wiki.js page using the gather-analyz
 }
 ```
 
+**Section matching:** `sectionTitle` is matched against parsed `# … ######` headings using an
+exact case-insensitive match first, then a prefix match as a fallback. The previous bi-directional
+substring match was removed because it caused queries like `"Foo"` to fuzzy-match `"Foo bar"`.
+
+**Atomicity:** If any `sectionTitle` cannot be matched, the entire update is refused before any
+write; no partial application. The response is `{ succeeded: false, errorCode: 6001, message: "Section(s) not found in page <id>: \"<title>\", ..." }`.
+
 **Returns:**
 ```typescript
 {
-  page: {
-    responseResult: {
-      succeeded: boolean;
-      errorCode?: number;
-      slug?: string;
-      message?: string;
-    };
-  }
+  responseResult: {
+    succeeded: boolean;
+    errorCode?: number;        // 6001 when one or more sectionTitles didn't match
+    message?: string;
+  };
 }
 ```
 
@@ -292,11 +297,15 @@ Robustly update a Wiki.js page with automatic fallback to delete-recreate strate
 
 **Workflow:**
 1. First attempts `update_page_intelligent`
-2. If that fails, falls back to delete-recreate strategy:
+2. If the intelligent path throws OR returns `succeeded: false` (other than `errorCode: 6001`,
+   which is a caller error and shouldn't be papered over by a recreate), falls back to delete-recreate:
    - Gathers current page content
    - Applies intelligent section updates
    - Deletes the original page
    - Recreates the page with updated content
+
+Section-not-found (`errorCode: 6001`) responses are returned directly without falling back, so that
+typos in `sectionTitle` are surfaced rather than silently no-op'd via a recreate.
 
 **Parameters:**
 ```typescript
