@@ -1,7 +1,7 @@
 // Ad-hoc unit tests for section-aware update helpers. Run with: npx tsx src/wikijs-client.test.ts
 // Stubs network — no Wiki.js required.
 
-import { WikiJsClient, WikiPage } from './wikijs-client.js';
+import { WikiJsClient, WikiPage, parseAdditionalHeaders } from './wikijs-client.js';
 
 type Any = any;
 
@@ -164,6 +164,60 @@ console.log('updatePageIntelligent — insert_before via sectionTitle (Mode C re
   });
 
   check('insert_before applied via sectionTitle without targetLine', sentContent !== null && sentContent.includes('## Host migration'), `sent content (first 200 chars): ${sentContent?.slice(0, 200)}`);
+}
+
+console.log('parseAdditionalHeaders');
+{
+  const empty = parseAdditionalHeaders(undefined);
+  check('undefined -> empty object', Object.keys(empty).length === 0);
+
+  const csv = parseAdditionalHeaders('CF-Access-Client-Id: abc.access, CF-Access-Client-Secret: def, Authorization: Basic Zm9vOmJhcg==');
+  check('csv parses 3 headers', Object.keys(csv).length === 3, JSON.stringify(csv));
+  check('csv keeps client id', csv['CF-Access-Client-Id'] === 'abc.access', csv['CF-Access-Client-Id']);
+  check('csv keeps basic auth value with = intact', csv['Authorization'] === 'Basic Zm9vOmJhcg==', csv['Authorization']);
+
+  const json = parseAdditionalHeaders('{"CF-Access-Client-Id":"abc","Authorization":"Basic xyz"}');
+  check('json parses 2 headers', Object.keys(json).length === 2, JSON.stringify(json));
+  check('json keeps authorization', json['Authorization'] === 'Basic xyz', json['Authorization']);
+
+  const multiline = parseAdditionalHeaders('CF-Access-Client-Id: abc\nAuthorization: Basic xyz');
+  check('newline-separated parses 2 headers', Object.keys(multiline).length === 2, JSON.stringify(multiline));
+}
+
+console.log('auth header routing');
+{
+  const prev = process.env.ADDITIONAL_HEADERS;
+
+  const prevHeader = process.env.WIKIJS_TOKEN_HEADER;
+  delete process.env.WIKIJS_TOKEN_HEADER;
+
+  // No Authorization in additional headers -> token goes to Authorization: Bearer.
+  delete process.env.ADDITIONAL_HEADERS;
+  const bearerClient = new WikiJsClient({ baseUrl: 'http://localhost', apiToken: 'tok123' }) as Any;
+  const bearerCommon = bearerClient.client.defaults.headers.common;
+  check('default: token sent as Authorization Bearer', bearerCommon['Authorization'] === 'Bearer tok123', bearerCommon['Authorization']);
+  check('default: no X-Api-Key set', bearerCommon['X-Api-Key'] === undefined, bearerCommon['X-Api-Key']);
+
+  // Authorization claimed by additional headers -> token moves to X-Api-Key (default) with Bearer scheme.
+  process.env.ADDITIONAL_HEADERS = 'Authorization: Basic Zm9vOmJhcg==';
+  const tokenClient = new WikiJsClient({ baseUrl: 'http://localhost', apiToken: 'tok123' }) as Any;
+  const tokenCommon = tokenClient.client.defaults.headers.common;
+  const tokenBase = tokenClient.client.defaults.headers;
+  check('bypass: token sent as X-Api-Key with Bearer scheme', tokenCommon['X-Api-Key'] === 'Bearer tok123', tokenCommon['X-Api-Key']);
+  check('bypass: Authorization NOT overwritten with Bearer', tokenCommon['Authorization'] === undefined, tokenCommon['Authorization']);
+  check('bypass: Authorization basic auth preserved on instance', tokenBase['Authorization'] === 'Basic Zm9vOmJhcg==', tokenBase['Authorization']);
+
+  // WIKIJS_TOKEN_HEADER overrides the side-header name.
+  process.env.WIKIJS_TOKEN_HEADER = 'X-Custom-Token';
+  const customClient = new WikiJsClient({ baseUrl: 'http://localhost', apiToken: 'tok123' }) as Any;
+  const customCommon = customClient.client.defaults.headers.common;
+  check('bypass: custom header name honored', customCommon['X-Custom-Token'] === 'Bearer tok123', customCommon['X-Custom-Token']);
+  check('bypass: default X-Api-Key not set when overridden', customCommon['X-Api-Key'] === undefined, customCommon['X-Api-Key']);
+
+  if (prev === undefined) delete process.env.ADDITIONAL_HEADERS;
+  else process.env.ADDITIONAL_HEADERS = prev;
+  if (prevHeader === undefined) delete process.env.WIKIJS_TOKEN_HEADER;
+  else process.env.WIKIJS_TOKEN_HEADER = prevHeader;
 }
 
 console.log('');

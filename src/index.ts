@@ -35,7 +35,6 @@ const CreatePageSchema = z.object({
   path: z.string().describe('Page path (URL slug)'),
   description: z.string().optional().describe('Page description'),
   tags: z.array(z.string()).optional().default([]).describe('Page tags'),
-  isPublished: z.boolean().optional().default(true).describe('Whether page is published'),
   isPrivate: z.boolean().optional().default(false).describe('Whether page is private'),
   locale: z.string().optional().default('en').describe('Page locale'),
   editor: z.string().optional().default('markdown').describe('Editor type'),
@@ -47,7 +46,6 @@ const UpdatePageSchema = z.object({
   content: z.string().optional().describe('Page content in markdown'),
   description: z.string().optional().describe('Page description'),
   tags: z.array(z.string()).optional().describe('Page tags'),
-  isPublished: z.boolean().optional().describe('Whether page is published'),
   isPrivate: z.boolean().optional().describe('Whether page is private'),
 });
 
@@ -63,7 +61,6 @@ const IntelligentUpdatePageSchema = z.object({
     title: z.string().optional().describe('Page title'),
     description: z.string().optional().describe('Page description'),
     tags: z.array(z.string()).optional().describe('Page tags'),
-    isPublished: z.boolean().optional().describe('Whether page is published'),
     isPrivate: z.boolean().optional().describe('Whether page is private')
   }).optional().describe('Global page updates')
 });
