@@ -95,6 +95,44 @@ export interface ContentSection {
   level: number;
 }
 
+// Parse the ADDITIONAL_HEADERS env var into a header map. Supports two formats:
+//   - JSON object: {"CF-Access-Client-Id":"...","Authorization":"Basic ..."}
+//   - Line/comma-separated "Header-Name: value" pairs (HTTP-style), e.g.
+//     "CF-Access-Client-Id: abc, CF-Access-Client-Secret: def, Authorization: Basic xxx"
+// Header names/values here (Cloudflare service-token IDs/secrets, base64 basic-auth) never
+// contain commas, so comma-splitting is safe for this use case; use the JSON form for values
+// that might contain commas.
+export function parseAdditionalHeaders(raw?: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (!raw) return headers;
+  const trimmed = raw.trim();
+  if (!trimmed) return headers;
+
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed);
+      for (const [key, value] of Object.entries(obj)) {
+        if (value != null) headers[key.trim()] = String(value);
+      }
+      return headers;
+    } catch {
+      // Not valid JSON — fall through to line/comma parsing.
+    }
+  }
+
+  for (const part of trimmed.split(/[\n,]+/)) {
+    const line = part.trim();
+    if (!line) continue;
+    const idx = line.indexOf(':');
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (key) headers[key] = value;
+  }
+
+  return headers;
+}
+
 export class WikiJsClient {
   private client: AxiosInstance;
   private config: WikiJsConfig;
@@ -106,11 +144,10 @@ export class WikiJsClient {
       'Content-Type': 'application/json',
     };
 
-    // Add Cloudflare Access headers if configured
-    if (process.env.CLOUDFLARE_CLIENT_ID && process.env.CLOUDFLARE_CLIENT_SECRET) {
-      headers['CF-Access-Client-Id'] = process.env.CLOUDFLARE_CLIENT_ID;
-      headers['CF-Access-Client-Secret'] = process.env.CLOUDFLARE_CLIENT_SECRET;
-    }
+    // Merge in any user-supplied headers (Cloudflare service tokens, Authentik forward-auth
+    // basic auth, etc.) from a single generic ADDITIONAL_HEADERS var.
+    const additionalHeaders = parseAdditionalHeaders(process.env.ADDITIONAL_HEADERS);
+    Object.assign(headers, additionalHeaders);
 
     const timeoutMs = parseInt(process.env.WIKIJS_TIMEOUT_MS || '60000', 10);
     this.client = axios.create({
@@ -122,10 +159,26 @@ export class WikiJsClient {
         new https.Agent({ rejectUnauthorized: false }) : undefined,
     });
 
-    // Set up authentication
+    // Set up authentication.
     if (config.apiToken) {
       this.authToken = config.apiToken;
-      this.client.defaults.headers.common['Authorization'] = `Bearer ${config.apiToken}`;
+
+      // If ADDITIONAL_HEADERS already claims the Authorization header (e.g. Authentik forward-auth
+      // basic auth), Wiki.js's own Bearer token can't share it. Send it via a side header instead
+      // (default X-Api-Key, overridable with WIKIJS_TOKEN_HEADER) — and include the full
+      // "Bearer <token>" scheme so a Traefik middleware only needs to verbatim rename that header ->
+      // Authorization (after the forward-auth check, before Wiki.js). Keeping the scheme in the value
+      // avoids any value-rewrite step that could drop "Bearer " and 401.
+      const authorizationTaken = Object.keys(additionalHeaders).some(
+        key => key.toLowerCase() === 'authorization'
+      );
+
+      if (authorizationTaken) {
+        const tokenHeader = process.env.WIKIJS_TOKEN_HEADER || 'X-Api-Key';
+        this.client.defaults.headers.common[tokenHeader] = `Bearer ${config.apiToken}`;
+      } else {
+        this.client.defaults.headers.common['Authorization'] = `Bearer ${config.apiToken}`;
+      }
     }
   }
 
@@ -330,7 +383,8 @@ export class WikiJsClient {
       content: pageData.content,
       description: pageData.description || '',
       editor: pageData.editor || 'markdown',
-      isPublished: pageData.isPublished ?? true,
+      // Always publish: drafts are easy to forget, so every write goes out published.
+      isPublished: true,
       isPrivate: pageData.isPrivate ?? false,
       locale: pageData.locale || 'en',
       path: pageData.path,
@@ -373,7 +427,8 @@ export class WikiJsClient {
       }
     `;
 
-    const result = await this.executeGraphQL(graphqlQuery, pageData);
+    // Always publish: drafts are easy to forget, so every update goes out published.
+    const result = await this.executeGraphQL(graphqlQuery, { ...pageData, isPublished: true });
     return result.pages.update;
   }
 

@@ -63,7 +63,59 @@ node examples/test-connection.js
 |----------|-------------|----------|---------|
 | `WIKIJS_URL` | Base URL of your Wiki.js instance | ✅ Yes | - |
 | `WIKIJS_API_TOKEN` | API token for authentication | ✅ Yes | - |
+| `ADDITIONAL_HEADERS` | Extra HTTP headers for edge/forward-auth bypass (see below) | ❌ No | - |
 | `NODE_TLS_REJECT_UNAUTHORIZED` | SSL certificate validation (0=disabled, 1=enabled) | ❌ No | 1 |
+
+> **Note:** All page writes are always published. There is no draft/unpublished option — `create_page` and `update_page` publish unconditionally so changes are never accidentally left as drafts.
+
+#### `ADDITIONAL_HEADERS` — edge / forward-auth bypass
+
+Use `ADDITIONAL_HEADERS` to attach headers that get your requests past an edge proxy or
+forward-auth layer (Cloudflare Access service tokens, Authentik forward-auth basic auth, etc.).
+Two formats are accepted:
+
+```env
+# Comma-separated "Header: value" pairs (single line)
+ADDITIONAL_HEADERS=CF-Access-Client-Id: xxx.access, CF-Access-Client-Secret: yyy, Authorization: Basic base64creds
+
+# ...or a JSON object (use this if a value contains commas)
+ADDITIONAL_HEADERS={"CF-Access-Client-Id":"xxx.access","Authorization":"Basic base64creds"}
+```
+
+**Authorization header collision:** Wiki.js's API token is normally sent as `Authorization: Bearer <token>`.
+If you set an `Authorization` header in `ADDITIONAL_HEADERS` (e.g. for Authentik basic-auth bypass),
+the two collide — so the Wiki.js token is automatically moved to a side header instead (default
+`X-Api-Key`, override with `WIKIJS_TOKEN_HEADER`), **already carrying the full `Bearer <token>`
+scheme**. In that case you must add a Traefik middleware that renames that side header →
+`Authorization`, chained **after** the Authentik forward-auth middleware (so Authentik sees the Basic
+auth) but **before** the request reaches Wiki.js (so Wiki.js sees the Bearer token).
+
+Because the value already includes `Bearer `, the middleware is a plain verbatim **rename** — no
+value rewriting needed. Traefik's built-in `headers` middleware can't move one header into another,
+so use a header-transform plugin, e.g. [`tomMoulard/htransformation`](https://github.com/tomMoulard/htransformation):
+
+```yaml
+# Traefik dynamic config (exact rule syntax varies by plugin version — check its docs)
+http:
+  middlewares:
+    wikijs-bearer:
+      plugin:
+        htransformation:
+          rules:
+            # Rename X-Api-Key -> Authorization (value already is "Bearer <token>")
+            - name: rename-api-key-to-authorization
+              type: Rename
+              header: X-Api-Key
+              value: Authorization
+  routers:
+    wikijs:
+      middlewares:
+        - authentik-forwardauth   # runs first: validates the Basic auth
+        - wikijs-bearer           # then hands Wiki.js its Bearer token
+```
+
+> The client's side header must match your middleware's source header. This repo defaults to
+> `X-Api-Key`; if your middleware reads a different header, set `WIKIJS_TOKEN_HEADER` to match.
 
 ### Claude Desktop Integration
 
@@ -218,7 +270,7 @@ interface CreatePageParams {
   path: string;            // URL slug
   description?: string;    // Page description
   tags?: string[];         // Array of tags
-  isPublished?: boolean;   // Published status (default: true)
+  // Note: pages are always published — there is no isPublished option
   isPrivate?: boolean;     // Private status (default: false)
   locale?: string;         // Page locale (default: 'en')
   editor?: string;         // Editor type (default: 'markdown')
@@ -233,7 +285,7 @@ interface UpdatePageParams {
   content?: string;        // New content
   description?: string;    // New description
   tags?: string[];         // New tags
-  isPublished?: boolean;   // Published status
+  // Note: updates are always published — there is no isPublished option
   isPrivate?: boolean;     // Private status
 }
 ```
