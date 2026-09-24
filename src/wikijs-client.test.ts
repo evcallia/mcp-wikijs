@@ -220,6 +220,51 @@ console.log('auth header routing');
   else process.env.WIKIJS_TOKEN_HEADER = prevHeader;
 }
 
+console.log('listPages — limit and offset');
+{
+  const c = makeClient() as Any;
+  const all = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, path: `p${i + 1}` }));
+  let calls = 0;
+  // Wiki.js ignores/miscounts `limit`, so the stub always returns everything.
+  c.executeGraphQL = async () => { calls++; return { pages: { list: all } }; };
+
+  const page2 = await c.listPages(3, 3);
+  check('paginates locally, not via a server limit', calls === 1, `graphql calls: ${calls}`);
+  check('returns exactly `limit` rows', page2.length === 3, `got ${page2.length}`);
+  check('skips `offset` rows', page2[0]?.id === 4 && page2[2]?.id === 6, `first=${page2[0]?.id} last=${page2[2]?.id}`);
+
+  const capped = await c.listPages(2, 0);
+  check('limit alone truncates', capped.length === 2 && capped[0]?.id === 1, `got ${capped.length}, first=${capped[0]?.id}`);
+}
+
+console.log('executeGraphQL — surfaces upstream failures');
+{
+  async function errFor(responseData: Any, headers: Any = {}): Promise<string> {
+    const c = makeClient() as Any;
+    c.client = { post: async () => ({ data: responseData, headers }) };
+    try { await c.executeGraphQL('{ pages { list { id } } }'); return '<no throw>'; }
+    catch (e: Any) { return String(e?.message ?? e); }
+  }
+
+  const html = await errFor('<!DOCTYPE html><html><head><title>Authelia</title></head><body>Sign in</body></html>',
+                            { 'content-type': 'text/html; charset=utf-8' });
+  check('HTML body does not throw a TypeError', !/Cannot read propert/.test(html), html.slice(0, 90));
+  check('HTML body names a non-GraphQL response', /non-GraphQL/i.test(html), html.slice(0, 120));
+  check('HTML body includes a body snippet', /Authelia|Sign in|DOCTYPE/i.test(html), html.slice(0, 120));
+
+  const gql = await errFor({ errors: [{ message: 'Forbidden' }], data: null });
+  check('GraphQL errors are surfaced verbatim', /Forbidden/.test(gql), gql.slice(0, 120));
+
+  const empty = await errFor({});
+  check('envelope with neither data nor errors is explained',
+        !/Cannot read propert/.test(empty) && /no data/i.test(empty), empty.slice(0, 120));
+
+  const ok = makeClient() as Any;
+  ok.client = { post: async () => ({ data: { data: { pages: { list: [{ id: 1 }] } } }, headers: {} }) };
+  const good = await ok.executeGraphQL('{ pages { list { id } } }');
+  check('valid response still returns data', good?.pages?.list?.[0]?.id === 1, JSON.stringify(good));
+}
+
 console.log('');
 if (failures.length === 0) {
   console.log('All checks passed.');

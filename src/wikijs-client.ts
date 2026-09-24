@@ -1,5 +1,4 @@
 import axios, { AxiosInstance } from 'axios';
-import { z } from 'zod';
 import * as https from 'https';
 
 // Type definitions for Wiki.js API responses
@@ -189,11 +188,32 @@ export class WikiJsClient {
         variables,
       });
 
-      if (response.data.errors) {
-        throw new Error(`GraphQL Error: ${JSON.stringify(response.data.errors)}`);
+      const payload = response.data;
+
+      // A 200 whose body is not a GraphQL envelope means something upstream
+      // answered instead of Wiki.js — usually an SSO login page from the auth
+      // chain. Without this the caller dereferences undefined and reports a
+      // TypeError that names the wrong problem.
+      if (typeof payload !== 'object' || payload === null) {
+        const contentType = response.headers?.['content-type'] ?? 'unknown';
+        const snippet = String(payload).replace(/\s+/g, ' ').trim().slice(0, 200);
+        throw new Error(
+          `Wiki.js returned a non-GraphQL response (content-type: ${contentType}). ` +
+          `An auth gate or proxy likely answered instead of Wiki.js. Body starts: ${snippet}`
+        );
       }
 
-      return response.data.data;
+      if (payload.errors) {
+        throw new Error(`GraphQL Error: ${JSON.stringify(payload.errors)}`);
+      }
+
+      if (payload.data === undefined || payload.data === null) {
+        throw new Error(
+          `Wiki.js returned no data and no errors. Response keys: ${JSON.stringify(Object.keys(payload))}`
+        );
+      }
+
+      return payload.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
         if (error.response) {
@@ -320,10 +340,13 @@ export class WikiJsClient {
   }
 
   async listPages(limit: number = 50, offset: number = 0): Promise<WikiPage[]> {
+    // Paginate locally. pages.list has no offset arg, and its limit counts
+    // pre-collapse rows (a tag-heavy page eats several), so limit:50 can yield
+    // ~13 pages. Explicit ordering keeps offset paging stable.
     const graphqlQuery = `
-      query {
+      query ListPages {
         pages {
-          list {
+          list(orderBy: ID, orderByDirection: ASC) {
             id
             path
             title
@@ -340,7 +363,7 @@ export class WikiJsClient {
     `;
 
     const result = await this.executeGraphQL(graphqlQuery);
-    return result.pages.list || [];
+    return (result.pages.list || []).slice(offset, offset + limit);
   }
 
   async createPage(pageData: CreatePageData): Promise<{ responseResult: { succeeded: boolean; errorCode?: number; slug?: string; message?: string } }> {

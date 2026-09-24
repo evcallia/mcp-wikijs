@@ -10,11 +10,23 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { WikiJsClient } from './wikijs-client.js';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import dotenv from 'dotenv';
 
 // Load environment variables
 dotenv.config();
+
+// MCP tool schemas: draft-07 to match the protocol, io:'input' so a field
+// with .default() stays optional for callers.
+const toJsonSchema = (schema: z.ZodType) =>
+  z.toJSONSchema(schema, {
+    target: 'draft-7',
+    io: 'input',
+    // io:'input' allows unknown keys (zod strips them), but the tool contract
+    // should reject them, so close every object explicitly.
+    override: (ctx) => {
+      if (ctx.jsonSchema.type === 'object') ctx.jsonSchema.additionalProperties = false;
+    },
+  });
 
 // Validation schemas
 const SearchPagesSchema = z.object({
@@ -109,42 +121,42 @@ class WikiJsMcpServer {
           {
             name: 'search_pages',
             description: 'Search for pages in Wiki.js by title or content',
-            inputSchema: zodToJsonSchema(SearchPagesSchema),
+            inputSchema: toJsonSchema(SearchPagesSchema),
           },
           {
             name: 'get_page',
             description: 'Get a specific page by ID or path',
-            inputSchema: zodToJsonSchema(GetPageSchema),
+            inputSchema: toJsonSchema(GetPageSchema),
           },
           {
             name: 'create_page',
             description: 'Create a new page in Wiki.js',
-            inputSchema: zodToJsonSchema(CreatePageSchema),
+            inputSchema: toJsonSchema(CreatePageSchema),
           },
           {
             name: 'update_page',
             description: 'Update an existing page in Wiki.js',
-            inputSchema: zodToJsonSchema(UpdatePageSchema),
+            inputSchema: toJsonSchema(UpdatePageSchema),
           },
           {
             name: 'update_page_intelligent',
             description: 'Intelligently update specific sections of a Wiki.js page using gather-analyze-edit workflow',
-            inputSchema: zodToJsonSchema(IntelligentUpdatePageSchema),
+            inputSchema: toJsonSchema(IntelligentUpdatePageSchema),
           },
           {
             name: 'update_page_robust',
             description: 'Robustly update a Wiki.js page with fallback to delete-recreate strategy',
-            inputSchema: zodToJsonSchema(IntelligentUpdatePageSchema),
+            inputSchema: toJsonSchema(IntelligentUpdatePageSchema),
           },
           {
             name: 'delete_page',
             description: 'Delete a page from Wiki.js',
-            inputSchema: zodToJsonSchema(DeletePageSchema),
+            inputSchema: toJsonSchema(DeletePageSchema),
           },
           {
             name: 'list_pages',
             description: 'List all pages in Wiki.js',
-            inputSchema: zodToJsonSchema(z.object({
+            inputSchema: toJsonSchema(z.object({
               limit: z.number().optional().default(50).describe('Maximum number of pages to return'),
               offset: z.number().optional().default(0).describe('Number of pages to skip'),
             })),
@@ -152,19 +164,19 @@ class WikiJsMcpServer {
           {
             name: 'search_users',
             description: 'Search for users in Wiki.js',
-            inputSchema: zodToJsonSchema(SearchUsersSchema),
+            inputSchema: toJsonSchema(SearchUsersSchema),
           },
           {
             name: 'get_user',
             description: 'Get user information by ID',
-            inputSchema: zodToJsonSchema(z.object({
+            inputSchema: toJsonSchema(z.object({
               id: z.number().describe('User ID'),
             })),
           },
           {
             name: 'list_groups',
             description: 'List all user groups in Wiki.js',
-            inputSchema: zodToJsonSchema(z.object({})),
+            inputSchema: toJsonSchema(z.object({})),
           },
         ],
       };
